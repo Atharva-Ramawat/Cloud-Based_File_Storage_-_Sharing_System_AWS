@@ -14,12 +14,13 @@ import {
 
 interface UploadResult {
   message: string
-  file_id: string
   filename: string
-  content_type: string
-  size_bytes: number
-  storage_provider: string
-  mock_url: string
+  download_url?: string
+  file_id?: string
+  content_type?: string
+  size_bytes?: number
+  storage_provider?: string
+  mock_url?: string
 }
 
 export default function App() {
@@ -234,9 +235,21 @@ export default function App() {
                 <span>{uploadResult.message}</span>
               </div>
               <div className="mt-2 text-xs font-mono space-y-1 text-emerald-200/90 break-all">
-                <div>File ID: {uploadResult.file_id}</div>
-                <div>Storage: {uploadResult.storage_provider}</div>
-                <div>Mock URL: {uploadResult.mock_url}</div>
+                <div>Filename: {uploadResult.filename}</div>
+                {uploadResult.download_url && (
+                  <div className="pt-1">
+                    <span className="font-semibold text-emerald-400">Presigned Download URL (1 hour):</span>{' '}
+                    <a
+                      href={uploadResult.download_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline text-blue-400 hover:text-blue-300 break-all block mt-1"
+                    >
+                      {uploadResult.download_url}
+                    </a>
+                  </div>
+                )}
+                {uploadResult.storage_provider && <div>Storage: {uploadResult.storage_provider}</div>}
               </div>
             </div>
           )}

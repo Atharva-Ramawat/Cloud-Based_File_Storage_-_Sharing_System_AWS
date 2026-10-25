@@ -1,18 +1,31 @@
-from fastapi import FastAPI, File, UploadFile, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 import os
-import uuid
 from datetime import datetime
 
-try:
-    from dotenv import load_dotenv  # type: ignore
-    load_dotenv()
-except ImportError:
-    pass
+# Load environment variables from .env
+load_dotenv()
+
+# AWS S3 Configuration
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
+
+# Initialize Boto3 S3 Client
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION,
+)
 
 app = FastAPI(
     title="Cloud-Based File Storage and Sharing API",
-    description="Backend API for secure file storage, management, and sharing with AWS integration",
+    description="Backend API for secure file storage, management, and sharing with AWS S3 integration",
     version="1.0.0",
 )
 
@@ -55,32 +68,70 @@ async def health_check():
 
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED, tags=["Files"])
-async def mock_upload(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...)):
     """
-    Mock file upload endpoint simulating upload to cloud storage (e.g., AWS S3).
-    Accepts multipart/form-data file uploads and returns mock storage metadata.
+    Uploads an incoming file directly to the configured AWS S3 bucket using boto3.
+    Generates and returns a pre-signed GET URL for temporary secure download access.
     """
-    file_id = str(uuid.uuid4())
-    mock_s3_bucket = os.getenv("AWS_S3_BUCKET_NAME", "my-cloud-storage-bucket")
-    mock_s3_key = f"uploads/{file_id}/{file.filename}"
-    mock_s3_url = f"https://{mock_s3_bucket}.s3.amazonaws.com/{mock_s3_key}"
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No filename provided in upload request",
+        )
 
-    # Read file size or content for mock simulation
-    contents = await file.read()
-    file_size_bytes = len(contents)
+    if not AWS_S3_BUCKET_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AWS_S3_BUCKET_NAME is not configured in environment variables",
+        )
 
-    return {
-        "message": "File uploaded successfully (mock mode)",
-        "file_id": file_id,
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "size_bytes": file_size_bytes,
-        "storage_provider": "AWS S3",
-        "bucket": mock_s3_bucket,
-        "key": mock_s3_key,
-        "mock_url": mock_s3_url,
-        "uploaded_at": datetime.utcnow().isoformat() + "Z",
-    }
+    try:
+        # Rewind file pointer to ensure full content upload
+        file.file.seek(0)
+
+        # Prepare extra arguments such as MIME ContentType
+        extra_args = {}
+        if file.content_type:
+            extra_args["ContentType"] = file.content_type
+
+        # Upload file directly to S3 bucket
+        if extra_args:
+            s3_client.upload_fileobj(
+                Fileobj=file.file,
+                Bucket=AWS_S3_BUCKET_NAME,
+                Key=file.filename,
+                ExtraArgs=extra_args,
+            )
+        else:
+            s3_client.upload_fileobj(
+                Fileobj=file.file,
+                Bucket=AWS_S3_BUCKET_NAME,
+                Key=file.filename,
+            )
+
+        # Generate pre-signed GET URL expiring in 3600 seconds (1 hour)
+        download_url = s3_client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={
+                "Bucket": AWS_S3_BUCKET_NAME,
+                "Key": file.filename,
+            },
+            ExpiresIn=3600,
+        )
+
+        return {
+            "filename": file.filename,
+            "message": "File uploaded successfully",
+            "download_url": download_url,
+        }
+
+    except HTTPException:
+        raise
+    except (BotoCoreError, ClientError, Exception) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"S3 operation failed: {str(exc)}",
+        )
 
 
 if __name__ == "__main__":
