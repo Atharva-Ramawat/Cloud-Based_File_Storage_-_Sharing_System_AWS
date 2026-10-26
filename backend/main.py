@@ -134,6 +134,63 @@ async def upload_file(file: UploadFile = File(...)):
         )
 
 
+@app.get("/files", status_code=status.HTTP_200_OK, tags=["Files"])
+async def list_files():
+    """
+    Lists all objects in the configured AWS S3 bucket.
+    Extracts key (filename), size, last_modified, and generates a pre-signed GET URL for each file.
+    Handles empty buckets gracefully and catches S3 errors.
+    """
+    if not AWS_S3_BUCKET_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AWS_S3_BUCKET_NAME is not configured in environment variables",
+        )
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=AWS_S3_BUCKET_NAME)
+        contents = response.get("Contents", [])
+
+        files = []
+        for obj in contents:
+            key = obj.get("Key", "")
+            size = obj.get("Size", 0)
+            last_modified = obj.get("LastModified")
+            last_modified_str = (
+                last_modified.isoformat()
+                if hasattr(last_modified, "isoformat")
+                else str(last_modified or "")
+            )
+
+            # Generate pre-signed GET URL expiring in 3600 seconds (1 hour)
+            download_url = s3_client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={
+                    "Bucket": AWS_S3_BUCKET_NAME,
+                    "Key": key,
+                },
+                ExpiresIn=3600,
+            )
+
+            files.append({
+                "key": key,
+                "filename": key,
+                "size": size,
+                "last_modified": last_modified_str,
+                "download_url": download_url,
+            })
+
+        return files
+
+    except HTTPException:
+        raise
+    except (BotoCoreError, ClientError, Exception) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"S3 operation failed: {str(exc)}",
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 

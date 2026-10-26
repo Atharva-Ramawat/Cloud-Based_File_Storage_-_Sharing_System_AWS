@@ -73,7 +73,8 @@ Storage_sys/
 #### Available Backend Endpoints:
 - `GET /`: Root health check endpoint
 - `GET /health`: Dedicated health check
-- `POST /upload`: Mock file upload endpoint returning cloud storage metadata
+- `POST /upload`: Upload a file directly to the S3 bucket and receive a presigned GET URL
+- `GET /files`: List all files stored in the S3 bucket with metadata and presigned download URLs
 
 ---
 
