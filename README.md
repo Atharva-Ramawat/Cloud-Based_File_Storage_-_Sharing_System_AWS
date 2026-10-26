@@ -38,6 +38,31 @@ By pairing an asynchronous FastAPI backend with Amazon S3 object storage and a P
 
 ---
 
+## 📸 Visual Overview & Application Screenshots
+
+A visual walkthrough of the Cloud-Based File Storage and Sharing platform interfaces, formatted for presentation and submission:
+
+### 1. Main Dashboard & File Upload Workspace
+The primary dashboard displaying active user credentials, an interactive drag-and-drop file upload workspace, and personal file storage with pre-signed download controls.
+
+![Main Dashboard and File Upload](images/image.png)
+
+---
+
+### 2. File Sharing & Cross-User Collaboration
+The file sharing modal allowing authenticated users to grant immediate access to other registered users by email address, accompanied by the **"Shared With Me"** section.
+
+![File Sharing Modal and Shared Files](images/sharing.png)
+
+---
+
+### 3. Chronological Activity Logs & Audit Trail
+The comprehensive audit trail table tracking all user activities (`UPLOAD`, `SHARE`, `DOWNLOAD`) with color-coded status badges, filenames, and exact timestamps.
+
+![Activity Logs and Audit Trail](images/activitylogs.png)
+
+---
+
 ## 💻 Tech Stack
 
 | Domain | Technology | Purpose |
@@ -60,6 +85,11 @@ By pairing an asynchronous FastAPI backend with Amazon S3 object storage and a P
 Storage_sys/
 ├── .gitignore                   # Ignores node_modules, __pycache__, .env, venvs, and local dbs
 ├── README.md                    # Project documentation & setup guide
+│
+├── images/                      # Application UI screenshots and visual assets
+│   ├── activitylogs.png         # Audit trail and activity logs screenshot
+│   ├── image.png                # Main dashboard and file upload screenshot
+│   └── sharing.png              # File sharing modal and shared files screenshot
 │
 ├── backend/                     # FastAPI Python Backend
 │   ├── .env.example             # Template for AWS credentials, database, and JWT secrets
