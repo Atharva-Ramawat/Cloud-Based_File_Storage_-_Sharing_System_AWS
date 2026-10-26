@@ -71,10 +71,13 @@ Storage_sys/
    - Alternative Redoc Docs: `http://localhost:8000/redoc`
 
 #### Available Backend Endpoints:
-- `GET /`: Root health check endpoint
-- `GET /health`: Dedicated health check
-- `POST /upload`: Upload a file directly to the S3 bucket and receive a presigned GET URL
-- `GET /files`: List all files stored in the S3 bucket with metadata and presigned download URLs
+- `GET /`: Root health check endpoint (Public)
+- `GET /health`: Dedicated health check (Public)
+- `POST /register`: Register a new user in PostgreSQL and issue a JWT token
+- `POST /login`: Authenticate credentials and issue a JWT token
+- `GET /me`: Get current authenticated user profile (Protected)
+- `POST /upload`: Upload file to S3 under user namespace, save `FileRecord` in PostgreSQL, return presigned URLs (Protected)
+- `GET /files`: List only the authenticated user's files from PostgreSQL with presigned download URLs (Protected)
 
 ---
 
