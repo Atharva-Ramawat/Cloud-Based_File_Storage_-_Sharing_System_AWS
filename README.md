@@ -76,8 +76,11 @@ Storage_sys/
 - `POST /register`: Register a new user in PostgreSQL and issue a JWT token
 - `POST /login`: Authenticate credentials and issue a JWT token
 - `GET /me`: Get current authenticated user profile (Protected)
-- `POST /upload`: Upload file to S3 under user namespace, save `FileRecord` in PostgreSQL, return presigned URLs (Protected)
+- `POST /upload`: Upload file to S3 under user namespace, save `FileRecord` in PostgreSQL, return presigned URLs, and log `UPLOAD` action (Protected)
 - `GET /files`: List only the authenticated user's files from PostgreSQL with presigned download URLs (Protected)
+- `POST /share`: Share an owned file with another user by email, create `FileShare`, and log `SHARE` action (Protected)
+- `GET /shared-files`: List files shared with the current user with presigned download URLs (Protected)
+- `GET /logs`: View recent activity logs (`UPLOAD`, `SHARE`, `DOWNLOAD`) for the authenticated user (Protected)
 
 ---
 

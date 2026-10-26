@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from database import engine, Base, get_db
-from models import User, FileRecord
+from models import User, FileRecord, FileShare, ActivityLog
 from auth import (
     hash_password,
     verify_password,
@@ -41,8 +41,8 @@ s3_client = boto3.client(
 
 app = FastAPI(
     title="Cloud-Based File Storage and Sharing API",
-    description="Backend API for secure user authentication, file metadata tracking in PostgreSQL, and AWS S3 storage",
-    version="2.0.0",
+    description="Backend API with user auth, file sharing, activity logs, and AWS S3 integration",
+    version="2.1.0",
 )
 
 # Enable CORS for local frontend development
@@ -57,6 +57,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------
+# Activity Logging Helper
+# ---------------------------------------------------------
+def log_activity(
+    db: Session, user_id: str, action: str, file_name: str
+) -> Optional[ActivityLog]:
+    """
+    Helper function to record an event into the ActivityLog table.
+    """
+    try:
+        log_entry = ActivityLog(
+            user_id=user_id,
+            action=action.upper(),
+            file_name=file_name,
+            timestamp=datetime.utcnow(),
+        )
+        db.add(log_entry)
+        db.commit()
+        db.refresh(log_entry)
+        return log_entry
+    except Exception as e:
+        db.rollback()
+        print(f"Failed to record activity log: {e}")
+        return None
 
 
 # ---------------------------------------------------------
@@ -93,6 +119,33 @@ class FileItemResponse(BaseModel):
     download_url: str
 
 
+class ShareFileRequest(BaseModel):
+    file_id: str
+    target_email: EmailStr
+
+
+class SharedFileResponse(BaseModel):
+    share_id: int
+    file_id: str
+    filename: str
+    size: int
+    shared_by: str
+    shared_at: str
+    download_url: str
+
+
+class ActivityLogResponse(BaseModel):
+    id: int
+    user_id: str
+    action: str
+    file_name: str
+    timestamp: str
+
+
+class DownloadLogRequest(BaseModel):
+    file_name: str
+
+
 # ---------------------------------------------------------
 # Health Endpoints (Public)
 # ---------------------------------------------------------
@@ -104,7 +157,7 @@ async def root_health_check():
     return {
         "status": "healthy",
         "service": "Cloud-Based File Storage API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -127,7 +180,6 @@ async def health_check():
 async def register(user_data: UserRegisterRequest, db: Session = Depends(get_db)):
     """
     Registers a new user in PostgreSQL and issues a JWT token.
-    (Can later be migrated to Amazon Cognito).
     """
     email_clean = user_data.email.strip().lower()
 
@@ -208,8 +260,7 @@ async def upload_file(
 ):
     """
     Protected route: Uploads incoming file directly to S3 under the user's namespace,
-    generates pre-signed URLs, and stores a new FileRecord (filename, s3_key, size, owner_id)
-    in the database linked to the authenticated user.
+    generates pre-signed URLs, stores a new FileRecord in the database, and logs the 'UPLOAD' action.
     """
     if not file.filename:
         raise HTTPException(
@@ -228,11 +279,11 @@ async def upload_file(
         # Store objects in user-specific S3 key namespace
         s3_key = f"uploads/{current_user.id}/{file_id}_{file.filename}"
 
-        # Read file contents into memory asynchronously
+        # 1. Read file contents into memory asynchronously
         contents = await file.read()
         file_size = len(contents)
 
-        # Upload bytes directly to S3 using put_object
+        # 2. Upload bytes directly to S3 using put_object
         if file.content_type:
             s3_client.put_object(
                 Bucket=AWS_S3_BUCKET_NAME,
@@ -247,7 +298,7 @@ async def upload_file(
                 Body=contents,
             )
 
-        # Generate pre-signed GET download URL (1 hour expiry)
+        # 3. Generate pre-signed GET download URL (1 hour expiry)
         download_url = s3_client.generate_presigned_url(
             ClientMethod="get_object",
             Params={
@@ -267,7 +318,7 @@ async def upload_file(
             ExpiresIn=3600,
         )
 
-        # Save FileRecord in PostgreSQL linked to the authenticated user
+        # 4. Save FileRecord in PostgreSQL linked to the authenticated user
         file_record = FileRecord(
             id=file_id,
             filename=file.filename,
@@ -279,6 +330,9 @@ async def upload_file(
         db.add(file_record)
         db.commit()
         db.refresh(file_record)
+
+        # 5. Log the 'UPLOAD' action
+        log_activity(db, current_user.id, "UPLOAD", file_record.filename)
 
         return {
             "id": file_record.id,
@@ -360,6 +414,198 @@ async def list_files(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"S3 or database operation failed: {str(exc)}",
         )
+
+
+# ---------------------------------------------------------
+# File Sharing Endpoints
+# ---------------------------------------------------------
+@app.post("/share", status_code=status.HTTP_201_CREATED, tags=["Sharing"])
+async def share_file(
+    share_data: ShareFileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Protected endpoint: Shares an owned file with a target user (by email).
+    Creates a FileShare record and logs the 'SHARE' action.
+    """
+    target_email_clean = share_data.target_email.strip().lower()
+
+    # 1. Prevent sharing with self
+    if target_email_clean == current_user.email.strip().lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot share a file with yourself.",
+        )
+
+    # 2. Look up target user by email
+    target_user = db.query(User).filter(User.email == target_email_clean).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with email '{share_data.target_email}' not found.",
+        )
+
+    # 3. Verify current user owns the file
+    file_record = (
+        db.query(FileRecord)
+        .filter(
+            FileRecord.id == share_data.file_id,
+            FileRecord.owner_id == current_user.id,
+        )
+        .first()
+    )
+    if not file_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found or you do not have permission to share it.",
+        )
+
+    # 4. Check if already shared
+    existing_share = (
+        db.query(FileShare)
+        .filter(
+            FileShare.file_id == file_record.id,
+            FileShare.shared_with_user_id == target_user.id,
+        )
+        .first()
+    )
+
+    if existing_share:
+        # Log the 'SHARE' action and return existing share info
+        log_activity(db, current_user.id, "SHARE", file_record.filename)
+        return {
+            "message": f"File is already shared with {target_user.email}",
+            "share_id": existing_share.id,
+            "file_id": file_record.id,
+            "filename": file_record.filename,
+            "shared_with": target_user.email,
+        }
+
+    # 5. Create FileShare record
+    new_share = FileShare(
+        file_id=file_record.id,
+        shared_with_user_id=target_user.id,
+        shared_at=datetime.utcnow(),
+    )
+    db.add(new_share)
+    db.commit()
+    db.refresh(new_share)
+
+    # 6. Log the 'SHARE' action
+    log_activity(db, current_user.id, "SHARE", file_record.filename)
+
+    return {
+        "message": f"File shared successfully with {target_user.email}",
+        "share_id": new_share.id,
+        "file_id": file_record.id,
+        "filename": file_record.filename,
+        "shared_with": target_user.email,
+    }
+
+
+@app.get("/shared-files", response_model=List[SharedFileResponse], status_code=status.HTTP_200_OK, tags=["Sharing"])
+async def get_shared_files(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Protected endpoint: Returns files shared with the current user,
+    generating S3 pre-signed download URLs for each.
+    """
+    shares = (
+        db.query(FileShare)
+        .filter(FileShare.shared_with_user_id == current_user.id)
+        .order_by(FileShare.shared_at.desc())
+        .all()
+    )
+
+    results = []
+    for share in shares:
+        file_record = db.query(FileRecord).filter(FileRecord.id == share.file_id).first()
+        if not file_record:
+            continue
+
+        owner = db.query(User).filter(User.id == file_record.owner_id).first()
+        owner_email = owner.email if owner else "Unknown"
+
+        download_url = ""
+        if AWS_S3_BUCKET_NAME:
+            try:
+                download_url = s3_client.generate_presigned_url(
+                    ClientMethod="get_object",
+                    Params={
+                        "Bucket": AWS_S3_BUCKET_NAME,
+                        "Key": file_record.s3_key,
+                    },
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                download_url = ""
+
+        results.append({
+            "share_id": share.id,
+            "file_id": file_record.id,
+            "filename": file_record.filename,
+            "size": file_record.size or 0,
+            "shared_by": owner_email,
+            "shared_at": (
+                share.shared_at.isoformat()
+                if share.shared_at
+                else datetime.utcnow().isoformat()
+            ),
+            "download_url": download_url,
+        })
+
+    return results
+
+
+# ---------------------------------------------------------
+# Activity Logs Endpoints
+# ---------------------------------------------------------
+@app.get("/logs", response_model=List[ActivityLogResponse], status_code=status.HTTP_200_OK, tags=["Activity"])
+async def get_activity_logs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Protected endpoint: Returns the current user's activity logs, ordered by newest first.
+    """
+    logs = (
+        db.query(ActivityLog)
+        .filter(ActivityLog.user_id == current_user.id)
+        .order_by(ActivityLog.timestamp.desc())
+        .limit(50)
+        .all()
+    )
+
+    return [
+        {
+            "id": log.id,
+            "user_id": log.user_id,
+            "action": log.action,
+            "file_name": log.file_name,
+            "timestamp": (
+                log.timestamp.isoformat()
+                if log.timestamp
+                else datetime.utcnow().isoformat()
+            ),
+        }
+        for log in logs
+    ]
+
+
+@app.post("/logs/download", status_code=status.HTTP_201_CREATED, tags=["Activity"])
+async def log_download_action(
+    payload: DownloadLogRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Logs when a user downloads a file.
+    """
+    log = log_activity(db, current_user.id, "DOWNLOAD", payload.file_name)
+    return {"message": "Download action logged", "id": log.id if log else None}
 
 
 if __name__ == "__main__":

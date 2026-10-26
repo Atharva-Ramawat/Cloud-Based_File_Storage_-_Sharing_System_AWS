@@ -5,8 +5,6 @@ import {
   LogIn,
   LogOut,
   User as UserIcon,
-  ShieldCheck,
-  Zap,
   HardDrive,
   CheckCircle2,
   AlertCircle,
@@ -20,6 +18,9 @@ import {
   Clock,
   Lock,
   Mail,
+  Share2,
+  Users,
+  History,
 } from 'lucide-react'
 
 interface UserInfo {
@@ -53,6 +54,24 @@ interface S3FileItem {
   download_url: string
 }
 
+interface SharedFileItem {
+  share_id: number
+  file_id: string
+  filename: string
+  size: number
+  shared_by: string
+  shared_at: string
+  download_url: string
+}
+
+interface ActivityLogItem {
+  id: number
+  user_id: string
+  action: string
+  file_name: string
+  timestamp: string
+}
+
 export default function App() {
   // Authentication State
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'))
@@ -80,10 +99,27 @@ export default function App() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [copied, setCopied] = useState<boolean>(false)
 
-  // Files in bucket State
+  // User Files State
   const [files, setFiles] = useState<S3FileItem[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false)
   const [filesError, setFilesError] = useState<string | null>(null)
+
+  // Shared Files State
+  const [sharedFiles, setSharedFiles] = useState<SharedFileItem[]>([])
+  const [isLoadingShared, setIsLoadingShared] = useState<boolean>(false)
+  const [sharedError, setSharedError] = useState<string | null>(null)
+
+  // Activity Logs State
+  const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>([])
+  const [isLoadingLogs, setIsLoadingLogs] = useState<boolean>(false)
+  const [logsError, setLogsError] = useState<string | null>(null)
+
+  // File Sharing Modal State
+  const [activeShareFile, setActiveShareFile] = useState<S3FileItem | null>(null)
+  const [shareTargetEmail, setShareTargetEmail] = useState<string>('')
+  const [isSharing, setIsSharing] = useState<boolean>(false)
+  const [shareModalError, setShareModalError] = useState<string | null>(null)
+  const [shareModalSuccess, setShareModalSuccess] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -94,14 +130,19 @@ export default function App() {
     setToken(null)
     setCurrentUser(null)
     setFiles([])
+    setSharedFiles([])
+    setActivityLogs([])
     setSelectedFile(null)
     setUploadResult(null)
     setUploadError(null)
     setFilesError(null)
+    setSharedError(null)
+    setLogsError(null)
     setAuthError(null)
+    setActiveShareFile(null)
   }, [])
 
-  // Fetch files for the authenticated user
+  // 1. Fetch files for the authenticated user
   const fetchFiles = useCallback(async () => {
     if (!token) return
 
@@ -148,12 +189,106 @@ export default function App() {
     }
   }, [token, handleLogout])
 
-  // Automatically fetch files on mount or whenever token changes
+  // 2. Fetch shared files (Shared with Me)
+  const fetchSharedFiles = useCallback(async () => {
+    if (!token) return
+
+    setIsLoadingShared(true)
+    setSharedError(null)
+
+    try {
+      const response = await fetch('http://localhost:8000/shared-files', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (response.status === 401) {
+        handleLogout()
+        return
+      }
+
+      if (!response.ok) {
+        let errorDetail = `Failed to fetch shared files (Status: ${response.status})`
+        try {
+          const errData = await response.json()
+          if (errData && errData.detail) {
+            errorDetail =
+              typeof errData.detail === 'string'
+                ? errData.detail
+                : JSON.stringify(errData.detail)
+          }
+        } catch {
+          // fallback
+        }
+        throw new Error(errorDetail)
+      }
+
+      const data: SharedFileItem[] = await response.json()
+      setSharedFiles(data)
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'An error occurred while loading shared files.'
+      setSharedError(message)
+    } finally {
+      setIsLoadingShared(false)
+    }
+  }, [token, handleLogout])
+
+  // 3. Fetch activity logs
+  const fetchLogs = useCallback(async () => {
+    if (!token) return
+
+    setIsLoadingLogs(true)
+    setLogsError(null)
+
+    try {
+      const response = await fetch('http://localhost:8000/logs', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (response.status === 401) {
+        handleLogout()
+        return
+      }
+
+      if (!response.ok) {
+        let errorDetail = `Failed to fetch logs (Status: ${response.status})`
+        try {
+          const errData = await response.json()
+          if (errData && errData.detail) {
+            errorDetail =
+              typeof errData.detail === 'string'
+                ? errData.detail
+                : JSON.stringify(errData.detail)
+          }
+        } catch {
+          // fallback
+        }
+        throw new Error(errorDetail)
+      }
+
+      const data: ActivityLogItem[] = await response.json()
+      setActivityLogs(data)
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'An error occurred while loading activity logs.'
+      setLogsError(message)
+    } finally {
+      setIsLoadingLogs(false)
+    }
+  }, [token, handleLogout])
+
+  // Automatically fetch user files, shared files, and activity logs on authentication
   useEffect(() => {
     if (token) {
       fetchFiles()
+      fetchSharedFiles()
+      fetchLogs()
     }
-  }, [token, fetchFiles])
+  }, [token, fetchFiles, fetchSharedFiles, fetchLogs])
 
   // Login / Register Form Submission
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -282,14 +417,86 @@ export default function App() {
       const data: UploadResult = await response.json()
       setUploadResult(data)
 
-      // Re-fetch user files immediately after upload
-      await fetchFiles()
+      // Re-fetch user files and logs immediately after upload
+      await Promise.all([fetchFiles(), fetchLogs()])
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'An unexpected error occurred during upload.'
       setUploadError(message)
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  // File Sharing Submission
+  const handleShareSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!activeShareFile || !shareTargetEmail.trim() || !token) return
+
+    setIsSharing(true)
+    setShareModalError(null)
+    setShareModalSuccess(null)
+
+    try {
+      const response = await fetch('http://localhost:8000/share', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          file_id: activeShareFile.id,
+          target_email: shareTargetEmail.trim(),
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        const errorDetail =
+          data && data.detail
+            ? typeof data.detail === 'string'
+              ? data.detail
+              : JSON.stringify(data.detail)
+            : `Failed to share file (Status: ${response.status})`
+        throw new Error(errorDetail)
+      }
+
+      setShareModalSuccess(data.message || `File shared with ${shareTargetEmail.trim()}!`)
+      setShareTargetEmail('')
+
+      // Refresh activity logs to reflect the 'SHARE' action
+      await fetchLogs()
+
+      // Close modal after brief confirmation
+      setTimeout(() => {
+        setActiveShareFile(null)
+        setShareModalSuccess(null)
+      }, 1500)
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'An error occurred while sharing file.'
+      setShareModalError(message)
+    } finally {
+      setIsSharing(false)
+    }
+  }
+
+  // Log Download Action
+  const handleDownloadClick = async (fileName: string) => {
+    if (!token) return
+    try {
+      await fetch('http://localhost:8000/logs/download', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ file_name: fileName }),
+      })
+      fetchLogs()
+    } catch {
+      // Non-blocking log action
     }
   }
 
@@ -384,8 +591,8 @@ export default function App() {
               </h1>
               <p className="text-xs text-slate-400 mt-2">
                 {isRegisterMode
-                  ? 'Sign up to store and manage your personal files with AWS S3'
-                  : 'Sign in to access and manage your private cloud files'}
+                  ? 'Sign up to store, share, and track files with AWS S3 & PostgreSQL'
+                  : 'Sign in to access your private cloud files and shared workspaces'}
               </p>
             </div>
 
@@ -498,7 +705,7 @@ export default function App() {
             </form>
 
             <div className="mt-6 text-center text-xs text-slate-500">
-              Protected with JWT auth and PostgreSQL file tracking
+              Protected with JWT auth, PostgreSQL file sharing & activity tracking
             </div>
           </div>
         </main>
@@ -506,27 +713,27 @@ export default function App() {
         /* ========================================================
            SCREEN 2: AUTHENTICATED VAULT DASHBOARD
            ======================================================== */
-        <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16 flex flex-col items-center text-center">
+        <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-14 flex flex-col items-center text-center">
           {/* Welcome User Pill */}
           <div className="inline-flex items-center space-x-2 px-4 py-1.5 rounded-full bg-slate-800/80 border border-slate-700 text-xs font-medium text-slate-300 mb-6">
-            <span className="text-emerald-400 font-semibold">Logged In:</span>
+            <span className="text-emerald-400 font-semibold">Active User:</span>
             <span className="font-mono text-white">{currentUser?.email}</span>
           </div>
 
           {/* Hero Title */}
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white max-w-4xl leading-tight">
-            Your Private Cloud Storage{' '}
+            Cloud File Storage &{' '}
             <span className="bg-gradient-to-r from-blue-400 via-sky-300 to-indigo-400 bg-clip-text text-transparent">
-              Workspace
+              Sharing Hub
             </span>
           </h1>
 
           {/* Hero Subtitle */}
           <p className="mt-4 text-base sm:text-lg text-slate-400 max-w-2xl leading-relaxed">
-            Upload files directly to your isolated AWS S3 namespace with metadata tracked in PostgreSQL.
+            Store files securely in your personal AWS S3 namespace, share documents with colleagues, and track full activity history.
           </p>
 
-          {/* Action Trigger Buttons */}
+          {/* Action Trigger Button */}
           <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
             <button
               onClick={triggerUploadClick}
@@ -545,14 +752,16 @@ export default function App() {
             className="hidden"
           />
 
-          {/* File Upload Workspace Card */}
-          <div className="mt-10 w-full max-w-3xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
+          {/* ========================================================
+             SECTION 1: FILE UPLOAD WORKSPACE CARD
+             ======================================================== */}
+          <div className="mt-10 w-full max-w-4xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
             <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
               <HardDrive className="w-5 h-5 text-blue-400" />
               <span>Upload New File</span>
             </h2>
             <p className="text-sm text-slate-400 mt-1">
-              Select or drop any file to securely upload to your user-specific S3 directory.
+              Upload any document or media directly to your private AWS S3 bucket.
             </p>
 
             <div
@@ -566,7 +775,7 @@ export default function App() {
                 Click to browse files or drag and drop here
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Linked to owner ID: <span className="font-mono text-slate-400">{currentUser?.id}</span>
+                Owner ID: <span className="font-mono text-slate-400">{currentUser?.id}</span>
               </p>
             </div>
 
@@ -651,6 +860,7 @@ export default function App() {
                           href={uploadResult.download_url}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={() => handleDownloadClick(uploadResult.filename)}
                           className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 shrink-0 transition-colors"
                           title="Open download URL"
                         >
@@ -674,8 +884,10 @@ export default function App() {
             )}
           </div>
 
-          {/* User's Files Section (Tracked in PostgreSQL) */}
-          <section className="mt-10 w-full max-w-3xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
+          {/* ========================================================
+             SECTION 2: USER'S OWN FILES (WITH SHARE BUTTON)
+             ======================================================== */}
+          <section className="mt-10 w-full max-w-4xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-slate-800">
               <div>
                 <div className="flex items-center space-x-2">
@@ -686,7 +898,7 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-sm text-slate-400 mt-1">
-                  Showing only files owned by your account ({currentUser?.email}).
+                  Files owned by your account ({currentUser?.email}). Click 'Share' to grant access to other users.
                 </p>
               </div>
 
@@ -694,7 +906,7 @@ export default function App() {
                 onClick={fetchFiles}
                 disabled={isLoadingFiles}
                 className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium text-slate-200 transition-all active:scale-95 disabled:opacity-50 self-start sm:self-auto"
-                title="Refresh your file list"
+                title="Refresh your files"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isLoadingFiles ? 'animate-spin text-blue-400' : ''}`} />
                 <span>{isLoadingFiles ? 'Refreshing...' : 'Refresh'}</span>
@@ -705,7 +917,7 @@ export default function App() {
             {isLoadingFiles && files.length === 0 && (
               <div className="py-12 flex flex-col items-center justify-center text-slate-400">
                 <RefreshCw className="w-8 h-8 animate-spin text-blue-400 mb-3" />
-                <p className="text-sm font-medium">Fetching your files from database & S3...</p>
+                <p className="text-sm font-medium">Fetching your files from S3 & PostgreSQL...</p>
               </div>
             )}
 
@@ -735,7 +947,7 @@ export default function App() {
                 </div>
                 <p className="text-base font-medium text-slate-300">You haven't uploaded any files yet</p>
                 <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                  Upload your first file above to store it in S3 and link it to your account.
+                  Upload a file above to store it in your S3 bucket and share it with colleagues.
                 </p>
               </div>
             )}
@@ -768,11 +980,27 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center space-x-2 shrink-0 self-end sm:self-auto">
-                      {/* Download Button (opens pre-signed download URL in new tab) */}
+                      {/* Share Button (Requirement) */}
+                      <button
+                        onClick={() => {
+                          setActiveShareFile(file)
+                          setShareModalError(null)
+                          setShareModalSuccess(null)
+                          setShareTargetEmail('')
+                        }}
+                        className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 text-xs font-semibold transition-all shadow-sm active:scale-95"
+                        title="Share this file with another user"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>Share</span>
+                      </button>
+
+                      {/* Download Button */}
                       <a
                         href={file.download_url}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={() => handleDownloadClick(file.filename)}
                         className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-all shadow-md shadow-blue-600/20 active:scale-95"
                       >
                         <Download className="w-3.5 h-3.5" />
@@ -781,6 +1009,235 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </section>
+
+          {/* ========================================================
+             SECTION 3: SHARED WITH ME SECTION (Requirement)
+             ======================================================== */}
+          <section className="mt-10 w-full max-w-4xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-slate-800">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <Users className="w-5 h-5 text-indigo-400" />
+                  <h2 className="text-xl font-bold text-white">Shared With Me</h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-950/80 border border-indigo-800/60 text-indigo-300">
+                    {sharedFiles.length} {sharedFiles.length === 1 ? 'file' : 'files'}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-400 mt-1">
+                  Files shared with your email address by other CloudVault users.
+                </p>
+              </div>
+
+              <button
+                onClick={fetchSharedFiles}
+                disabled={isLoadingShared}
+                className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium text-slate-200 transition-all active:scale-95 disabled:opacity-50 self-start sm:self-auto"
+                title="Refresh shared files"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingShared ? 'animate-spin text-indigo-400' : ''}`} />
+                <span>{isLoadingShared ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
+            </div>
+
+            {/* Loading State */}
+            {isLoadingShared && sharedFiles.length === 0 && (
+              <div className="py-12 flex flex-col items-center justify-center text-slate-400">
+                <RefreshCw className="w-8 h-8 animate-spin text-indigo-400 mb-3" />
+                <p className="text-sm font-medium">Fetching shared files...</p>
+              </div>
+            )}
+
+            {/* Error State */}
+            {sharedError && (
+              <div className="mt-6 p-4 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 flex items-start justify-between gap-4">
+                <div className="flex items-start space-x-2 text-sm">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">Unable to load shared files:</span> {sharedError}
+                  </div>
+                </div>
+                <button
+                  onClick={fetchSharedFiles}
+                  className="text-xs font-semibold text-rose-300 hover:text-white underline shrink-0"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {!isLoadingShared && !sharedError && sharedFiles.length === 0 && (
+              <div className="py-12 flex flex-col items-center justify-center text-center">
+                <div className="p-3 rounded-full bg-slate-800/60 text-slate-500 mb-3">
+                  <Share2 className="w-8 h-8" />
+                </div>
+                <p className="text-base font-medium text-slate-300">No files shared with you yet</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                  When other users share files with <span className="font-mono text-slate-300">{currentUser?.email}</span>, they will automatically appear here.
+                </p>
+              </div>
+            )}
+
+            {/* Shared File Items List */}
+            {sharedFiles.length > 0 && (
+              <div className="mt-4 divide-y divide-slate-800/80">
+                {sharedFiles.map((item) => (
+                  <div
+                    key={item.share_id}
+                    className="py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-800/30 px-3 rounded-xl transition-colors group"
+                  >
+                    <div className="flex items-center space-x-3 overflow-hidden">
+                      <div className="p-2.5 rounded-xl bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 shrink-0 group-hover:scale-105 transition-transform">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <div className="truncate">
+                        <p className="text-sm font-semibold text-slate-100 truncate group-hover:text-indigo-300 transition-colors">
+                          {item.filename}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 mt-1">
+                          <span>{formatFileSize(item.size)}</span>
+                          <span>•</span>
+                          <span className="text-indigo-300">Shared by: {item.shared_by}</span>
+                          <span>•</span>
+                          <span className="flex items-center space-x-1">
+                            <Clock className="w-3 h-3 text-slate-500" />
+                            <span>{formatDate(item.shared_at)}</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 shrink-0 self-end sm:self-auto">
+                      {/* Download Button */}
+                      <a
+                        href={item.download_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => handleDownloadClick(item.filename)}
+                        className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-all shadow-md shadow-indigo-600/20 active:scale-95"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download</span>
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* ========================================================
+             SECTION 4: ACTIVITY LOGS SECTION (Requirement)
+             ======================================================== */}
+          <section className="mt-10 w-full max-w-4xl bg-slate-900/60 border border-slate-800 rounded-2xl p-6 sm:p-8 backdrop-blur-sm text-left shadow-2xl">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-slate-800">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <History className="w-5 h-5 text-amber-400" />
+                  <h2 className="text-xl font-bold text-white">Activity Logs</h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-950/80 border border-amber-800/60 text-amber-300">
+                    {activityLogs.length} recent
+                  </span>
+                </div>
+                <p className="text-sm text-slate-400 mt-1">
+                  Audit trail of your file uploads, sharing actions, and downloads.
+                </p>
+              </div>
+
+              <button
+                onClick={fetchLogs}
+                disabled={isLoadingLogs}
+                className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium text-slate-200 transition-all active:scale-95 disabled:opacity-50 self-start sm:self-auto"
+                title="Refresh activity logs"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLogs ? 'animate-spin text-amber-400' : ''}`} />
+                <span>{isLoadingLogs ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
+            </div>
+
+            {/* Loading State */}
+            {isLoadingLogs && activityLogs.length === 0 && (
+              <div className="py-12 flex flex-col items-center justify-center text-slate-400">
+                <RefreshCw className="w-8 h-8 animate-spin text-amber-400 mb-3" />
+                <p className="text-sm font-medium">Fetching activity logs...</p>
+              </div>
+            )}
+
+            {/* Error State */}
+            {logsError && (
+              <div className="mt-6 p-4 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 flex items-start justify-between gap-4">
+                <div className="flex items-start space-x-2 text-sm">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">Unable to load logs:</span> {logsError}
+                  </div>
+                </div>
+                <button
+                  onClick={fetchLogs}
+                  className="text-xs font-semibold text-rose-300 hover:text-white underline shrink-0"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {!isLoadingLogs && !logsError && activityLogs.length === 0 && (
+              <div className="py-12 flex flex-col items-center justify-center text-center">
+                <div className="p-3 rounded-full bg-slate-800/60 text-slate-500 mb-3">
+                  <History className="w-8 h-8" />
+                </div>
+                <p className="text-base font-medium text-slate-300">No activity recorded yet</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                  Actions such as uploading a file, sharing a document, or downloading will be logged here.
+                </p>
+              </div>
+            )}
+
+            {/* Activity Logs Table */}
+            {activityLogs.length > 0 && (
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-xs uppercase bg-slate-950/60 text-slate-400 border-b border-slate-800">
+                    <tr>
+                      <th scope="col" className="px-4 py-3">Action</th>
+                      <th scope="col" className="px-4 py-3">File Name</th>
+                      <th scope="col" className="px-4 py-3 text-right">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {activityLogs.map((log) => {
+                      const actionUpper = (log.action || '').toUpperCase()
+                      let badgeClass = 'bg-slate-800 text-slate-300 border-slate-700'
+                      if (actionUpper === 'UPLOAD') {
+                        badgeClass = 'bg-emerald-950/80 text-emerald-300 border-emerald-800/80'
+                      } else if (actionUpper === 'SHARE') {
+                        badgeClass = 'bg-indigo-950/80 text-indigo-300 border-indigo-800/80'
+                      } else if (actionUpper === 'DOWNLOAD') {
+                        badgeClass = 'bg-sky-950/80 text-sky-300 border-sky-800/80'
+                      }
+
+                      return (
+                        <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${badgeClass}`}>
+                              {actionUpper}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-200 text-xs font-medium truncate max-w-xs sm:max-w-md">
+                            {log.file_name}
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap text-xs text-slate-400">
+                            {formatDate(log.timestamp)}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </section>
@@ -798,26 +1255,120 @@ export default function App() {
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/40 border border-slate-800/80">
-              <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center mb-4">
-                <Zap className="w-5 h-5" />
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-4">
+                <Share2 className="w-5 h-5" />
               </div>
-              <h3 className="text-base font-semibold text-white">PostgreSQL Metadata</h3>
+              <h3 className="text-base font-semibold text-white">PostgreSQL Sharing</h3>
               <p className="text-sm text-slate-400 mt-2">
-                File records index the owner_id so users only query and retrieve their own stored files.
+                FileShare records grant secure cross-user access without duplicating S3 objects.
               </p>
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/40 border border-slate-800/80">
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-4">
-                <ShieldCheck className="w-5 h-5" />
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center mb-4">
+                <History className="w-5 h-5" />
               </div>
-              <h3 className="text-base font-semibold text-white">JWT Authentication</h3>
+              <h3 className="text-base font-semibold text-white">Activity Audit Trail</h3>
               <p className="text-sm text-slate-400 mt-2">
-                Stateless cryptographic tokens safeguard endpoints and identify the active user session.
+                Every upload, share, and download is permanently recorded with exact timestamps.
               </p>
             </div>
           </div>
         </main>
+      )}
+
+      {/* ========================================================
+         SHARE FILE MODAL
+         ======================================================== */}
+      {activeShareFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-6 sm:p-8 shadow-2xl relative">
+            <button
+              onClick={() => {
+                setActiveShareFile(null)
+                setShareModalError(null)
+                setShareModalSuccess(null)
+              }}
+              className="absolute top-5 right-5 text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center space-x-3 mb-3">
+              <div className="p-2.5 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
+                <Share2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Share File</h3>
+                <p className="text-xs text-slate-400">Grant another user access to this file</p>
+              </div>
+            </div>
+
+            <div className="my-4 p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center space-x-2.5">
+              <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+              <span className="text-xs font-mono text-slate-200 truncate">{activeShareFile.filename}</span>
+            </div>
+
+            {shareModalError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-950/60 border border-rose-800/80 text-rose-300 text-xs flex items-start space-x-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{shareModalError}</span>
+              </div>
+            )}
+
+            {shareModalSuccess && (
+              <div className="mb-4 p-3 rounded-xl bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 text-xs flex items-center space-x-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{shareModalSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleShareSubmit} className="space-y-4 text-left">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5 flex items-center space-x-1.5">
+                  <Mail className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Target User's Email</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={shareTargetEmail}
+                  onChange={(e) => setShareTargetEmail(e.target.value)}
+                  placeholder="colleague@example.com"
+                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/90 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                />
+              </div>
+
+              <div className="flex items-center space-x-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveShareFile(null)
+                    setShareModalError(null)
+                    setShareModalSuccess(null)
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSharing}
+                  className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white font-semibold text-xs transition-all shadow-md shadow-indigo-600/20 active:scale-95 flex items-center justify-center space-x-1.5"
+                >
+                  {isSharing ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                      <span>Sharing...</span>
+                    </>
+                  ) : (
+                    <span>Share File</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Footer */}
